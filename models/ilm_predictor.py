@@ -5,7 +5,7 @@ Calculates the physics-based energy consumption of each VAV using explicit senso
 (Airflow, Supply Temps, Zone Temps, and AHU Fans).
 """
 
-from typing import Dict, List, Set, Iterable
+from typing import Dict, List, Iterable
 from buildings.building_data import VAV
 from models.hvac import HVACRecord, SENSIBLE_HEAT_CONSTANT, KWH_TO_KBTU
 
@@ -41,7 +41,7 @@ def predict_ilm_consumption(vavs: Iterable[VAV], record: HVACRecord) -> Dict[VAV
             if saf > 0:
                 if zt > sat:
                     q_cool = SENSIBLE_HEAT_CONSTANT * saf * (zt - sat) * h / 1000
-                if sat > ahu_sat and ahu_sat > 0:
+                if sat > ahu_sat > 0:
                     q_reheat = SENSIBLE_HEAT_CONSTANT * saf * (sat - ahu_sat) * h / 1000
 
             # Fan energy attributed to this VAV based on proportional airflow

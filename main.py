@@ -7,12 +7,12 @@ import sys
 import pandas as pd
 from pathlib import Path
 from collections import defaultdict
-from typing import Set, Union, Optional
+from typing import Set
 
 import buildings
 import models
 import plot
-from buildings.building_data import VAV, room_sort_key
+from buildings.building_data import VAV
 
 
 # ─── Configuration ─────────────────────────────────────────────────────────────────────
@@ -20,12 +20,12 @@ from buildings.building_data import VAV, room_sort_key
 If chosen to not use the command line, can configure the program using these global variables
 """
 BUILDING = 'BrenHall'    # the smart building in which room energy consumption is investigated
-PURPOSE = 'plot'         # predict = 0, plot = 1, summarize = 2
-ROOMS = None             # None = all rooms, INT = specific room, STR = room type
+PURPOSE = 'summarize'    # predict = 0, plot = 1, summarize = 2
+ROOMS = None             # None = all rooms, STR = specific room or room type
 # ───────────────────────────────────────────────────────────────────────────────────────
 
 
-def _get_rooms_to_predict(vavs: Set[VAV], rooms: Union[None, int, str]) -> Set[str]:
+def _get_rooms_to_predict(vavs: Set[VAV], rooms: str | None) -> Set[str]:
     """
     None = all rooms. Otherwise, rooms is a room number if it matches one in the building,
     else a room type.
@@ -44,7 +44,7 @@ def _print_room_energy_consumption(room_consumption):
     for time_key, rooms_data in sorted(room_consumption.items()):
         day, hr = time_key
         print(f"--- {DAYS_OF_WEEK[day]} {hr:02d}:00 ---")
-        for rm, energy in sorted(rooms_data.items(), key = lambda kv: room_sort_key(kv[0])):
+        for rm, energy in sorted(rooms_data.items(), key = lambda kv: buildings.room_sort_key(kv[0])):
             print(f" Room {rm}: ILM = {energy[0]:.2f} kBTU, NILM = {energy[1]:.2f} kBTU")
 
 
@@ -79,7 +79,7 @@ def _write_daily_csv(daily: dict, day_info: dict, building_vavs: Set[VAV], targe
     and the first and last interval time.
     """
     mapped_rooms = {room.room_num for vav in building_vavs for room in vav.rooms_associated}
-    room_cols = sorted(target_rooms & mapped_rooms, key = room_sort_key)
+    room_cols = sorted(target_rooms & mapped_rooms, key = buildings.room_sort_key)
     if not room_cols:
         print("No matching rooms to write")
         return
@@ -88,7 +88,7 @@ def _write_daily_csv(daily: dict, day_info: dict, building_vavs: Set[VAV], targe
     for day, vav_data in sorted(daily.items()):
         count, first, last = day_info[day]
         rooms_energy = _vavs_to_rooms(vav_data, building_vavs, set(room_cols))
-        row = {'date': day.isoformat(), 'intervals': count,
+        row = {'Date': day.isoformat(), 'intervals': count,
                'first_time': first.strftime('%H:%M'), 'last_time': last.strftime('%H:%M')}
         for rm in room_cols:
             ilm_energy, nilm_energy = rooms_energy[rm] if rm in rooms_energy else (0.0, 0.0)
@@ -103,7 +103,7 @@ def _write_daily_csv(daily: dict, day_info: dict, building_vavs: Set[VAV], targe
           f"{partial} day(s) without the entire day's 96 intervals)")
 
 
-def main(building: str, purpose: int, rooms: None | int | str) -> None:
+def main(building: str, purpose: int, rooms: None | str) -> None:
     # Get Building VAV information
     vav_room_mapping = Path(f'data/{building}_vav_room_mapping.csv')
     hvac_file = Path(f'data/{building}2025_combined.csv')
@@ -163,10 +163,7 @@ if __name__ == '__main__':
     if len(sys.argv) == 3 or len(sys.argv) == 4:
         BUILDING = sys.argv[1]
         PURPOSE = sys.argv[2]
-        try:
-            ROOMS = int(sys.argv[3]) if len(sys.argv) == 4 else None
-        except ValueError:
-            ROOMS = sys.argv[3]
+        ROOMS = sys.argv[3] if len(sys.argv) == 4 else None
 
     elif len(sys.argv) != 1:
         print("Usage: main.py building purpose rooms")

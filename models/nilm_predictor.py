@@ -5,7 +5,7 @@ Calculates whole-building energy usage and disaggregates it  to the VAV level pr
 using a calculated thermal signal.
 """
 
-from typing import Dict, Set, Iterable
+from typing import Dict, Iterable
 from buildings.building_data import VAV
 from models.hvac import HVACRecord, KWH_TO_KBTU, TONS_TO_KBTU_HR, WATER_HEAT_CONSTANT
 

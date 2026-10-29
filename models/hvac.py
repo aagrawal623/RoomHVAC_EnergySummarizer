@@ -13,7 +13,7 @@ from dataclasses import dataclass, field
 from collections import Counter, defaultdict
 from itertools import chain, islice
 from pathlib import Path
-from typing import Dict, List, Generator, Any, Union, Set, Iterable, Optional, Tuple
+from typing import Dict, List, Generator, Any, Union, Iterable, Optional, Tuple
 from dateutil import parser, tz
 
 
@@ -35,7 +35,7 @@ LOCAL_TZ = tz.gettz("America/Los_Angeles")
 
 
 # Buildings not listed here have their fans detected from the data, so an entry is only
-# needed when detection can't tell which AHU a fan belongs to and you know better.
+# needed when detection can't tell which AHU a fan belongs to, and you know better.
 FAN_MAP: Dict[str, Dict[str, List[str]]] = {
     "Bren Hall": {
         "AH-01": ["SF-1", "SF-2", "RF-1", "RF-2"],
@@ -156,14 +156,14 @@ def _safe_float(val: Any) -> float:
     if not val:
         return 0.0
     try:
-        cleaned = re.sub(r"[^\d\.\-]", "", str(val))
+        cleaned = re.sub(r"[^\d\-]", "", str(val))
         return float(cleaned) if cleaned else 0.0
     except ValueError:
         return 0.0
 
 
 def _power_kw(val: Any) -> float:
-    """Parses a power reading and returns kW, converting from hp when the raw string carries an 'hp' unit."""
+    """Parses a power reading and returns kW, converting from hp when the raw string carries a 'hp' unit."""
     kw = _safe_float(val)
     return kw * HP_TO_KW if "hp" in str(val).lower() else kw
 
