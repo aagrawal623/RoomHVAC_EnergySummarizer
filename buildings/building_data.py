@@ -1,3 +1,4 @@
+import re
 import pandas as pd
 from pathlib import Path
 
@@ -7,14 +8,14 @@ class Room:
     Represents a physical room in the building.
 
     Attributes:
-        room_num (int): The unique room identifier/number.
+        room_num (str): The unique room identifier.
         room_type (str): The classification of the room
         room_capacity (int): Maximum occupancy of the room.
         room_bucket (str): The categorized room size for the room.
         room_size_sf (float): The room area in square feet.
     """
 
-    def __init__(self, room_num: int, room_type: str, room_capacity: int, room_bucket: str,
+    def __init__(self, room_num: str, room_type: str, room_capacity: int, room_bucket: str,
                  room_size_sf: float = 0.0):
         self.room_num = room_num
         self.room_type = room_type
@@ -75,6 +76,25 @@ class VAV:
     def add_room(self, room: Room) -> None:
         """Assigns a Room to this VAV's service list."""
         self.rooms_associated.append(room)
+
+
+def normalize_room_num(raw: str) -> str:
+    """Returns a room identifier as a clean string: trimmed, with spreadsheet artifacts like '1100.0' -> '1100'."""
+    raw = str(raw).strip()
+    return raw.split(".")[0] if re.fullmatch(r"\d+\.0+", raw) else raw
+
+
+def room_sort_key(room_num) -> list:
+    """Natural sort key so '241' < 'G241' < 'G1000' and '999' < '1000' (use as sorted(rooms, key = room_sort_key))."""
+    return [int(tok) if tok.isdigit() else tok for tok in re.split(r"(\d+)", str(room_num))]
+
+
+def _to_number(text: str) -> float:
+    """Parses a numeric field for display only (capacity, area); blank or non-numeric text gives 0.0."""
+    try:
+        return float(text)
+    except ValueError:
+        return 0.0
 
 
 # Accepted header names (case-insensitive) for each field in the mapping file.
@@ -153,11 +173,11 @@ def get_building_vavs(file: Path) -> set[VAV]:
 
         try:
             vav.add_room(Room(
-                room_num = int(float(room_num)),
+                room_num = normalize_room_num(room_num),
                 room_type = cell(row, "room_type"),
-                room_capacity = int(float(cell(row, "room_capacity") or 0)),
+                room_capacity = int(_to_number(cell(row, "room_capacity"))),
                 room_bucket = cell(row, "room_bucket"),
-                room_size_sf = float(cell(row, "room_size_sf") or 0),
+                room_size_sf = _to_number(cell(row, "room_size_sf")),
             ))
         except ValueError as e:
             raise ValueError(f"{file}: bad room data on row {line_no + 2}: {e}") from e

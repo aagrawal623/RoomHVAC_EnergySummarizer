@@ -22,7 +22,7 @@ def generate_plots(room_consumption, building_vavs):
             }
 
     # Directories
-    dirs = ['data/room_type', 'data/room_size', 'data/combined']
+    dirs = ['output/room_type', 'output/room_size', 'output/combined']
     for d in dirs:
         os.makedirs(d, exist_ok = True)
 
@@ -45,9 +45,14 @@ def generate_plots(room_consumption, building_vavs):
     day_tick_labels = []
 
     for idx, (day_idx, hr_idx) in enumerate(sorted_time_keys):
-        if hr_idx == 12:  # Label centered on the day
+        # Label at the start of the day
+        if hr_idx == 0:
             day_tick_positions.append(idx)
             day_tick_labels.append(DAYS_OF_WEEK[day_idx])
+
+    # Add a final tick at the end of the x-axis for the end of Sunday
+    day_tick_positions.append(len(sorted_time_keys))
+    day_tick_labels.append("End")
 
     def plot_group_by_rooms(groups_dict, out_dir, category_label):
         for group_name, rooms in groups_dict.items():
@@ -117,10 +122,10 @@ def generate_plots(room_consumption, building_vavs):
                 plt.close(fig)
 
     print("Generating room_type plots...")
-    plot_group_by_rooms(type_groups, 'data/room_type', 'Room Type')
+    plot_group_by_rooms(type_groups, 'output/room_type', 'Room Type')
 
     print("Generating room_size plots...")
-    plot_group_by_rooms(size_groups, 'data/room_size', 'Room Size')
+    plot_group_by_rooms(size_groups, 'output/room_size', 'Room Size')
 
     print("Generating combined plots...")
-    plot_group_by_rooms(combined_groups, 'data/combined', 'Combined')
+    plot_group_by_rooms(combined_groups, 'output/combined', 'Combined')
