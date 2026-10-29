@@ -8,26 +8,37 @@ class Room:
 
     Attributes:
         room_num (int): The unique room identifier/number.
-        room_type (str): The classification of the room (e.g., 'Office', 'Lab').
+        room_type (str): The classification of the room
         room_capacity (int): Maximum occupancy of the room.
         room_bucket (str): The categorized room size for the room.
+        room_size_sf (float): The room area in square feet.
     """
 
-    def __init__(self, room_num: int, room_type: str, room_capacity: int, room_bucket: str):
+    def __init__(self, room_num: int, room_type: str, room_capacity: int, room_bucket: str,
+                 room_size_sf: float = 0.0):
         self.room_num = room_num
         self.room_type = room_type
         self.room_capacity = room_capacity
         self.room_bucket = room_bucket
+        self.room_size_sf = room_size_sf
 
     def __repr__(self) -> str:
         return f"Room({self.room_num}, {self.room_type!r}, cap={self.room_capacity}, {self.room_bucket!r})"
 
     def get_room_weight(self) -> float:
         """
-        Returns the proportional share weight based on the room size bucket.
+        Returns the proportional share weight based on the room size class. Sub-strata such as S3 or M1
+        use the weight of their base class (S, M, L, XL).
         """
-        weights = {'S': 1.0, 'M': 2.0, 'L': 4.0, 'XL': 8.0}
-        return weights.get(self.room_bucket.strip().upper(), 1.0)
+        weights = {'S': 1.0, 'M': 2.0, 'L': 4.0, 'XL': 8.0,
+                   'S1': 1, 'S2': 1.5, 'S3': 2.0, 'S4': 2.5, 'S5': 2.9, 'S6': 3.5,
+                   'M1': 4.8, 'M2': 6.6, 'M3': 9.0, 'M4': 12.0,
+                   'L1': 18.0,
+                   'XL1': 30.0
+                   }
+
+        bucket = self.room_bucket.strip().upper()
+        return weights[bucket] if bucket in weights else 1.0
 
 
 class VAV:
@@ -74,6 +85,7 @@ _COLUMN_ALIASES = {
     "room_type": ("room_type", "type"),
     "room_capacity": ("room_capacity", "capacity"),
     "room_bucket": ("room_bucket", "bucket"),
+    "room_size_sf": ("room_size_sf", "size_sf", "room_area_sf", "area_sf"),
 }
 
 
@@ -145,6 +157,7 @@ def get_building_vavs(file: Path) -> set[VAV]:
                 room_type = cell(row, "room_type"),
                 room_capacity = int(float(cell(row, "room_capacity") or 0)),
                 room_bucket = cell(row, "room_bucket"),
+                room_size_sf = float(cell(row, "room_size_sf") or 0),
             ))
         except ValueError as e:
             raise ValueError(f"{file}: bad room data on row {line_no + 2}: {e}") from e
