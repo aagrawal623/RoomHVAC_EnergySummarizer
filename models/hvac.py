@@ -7,13 +7,14 @@ energy consumption calculations.
 """
 
 import csv
+import math
 import re
 from datetime import datetime
 from dataclasses import dataclass, field
 from collections import Counter, defaultdict
 from itertools import chain, islice
 from pathlib import Path
-from typing import Dict, List, Generator, Any, Union, Iterable, Optional, Tuple
+from typing import Dict, List, Generator, Any, Union, Set, Iterable, Optional, Tuple
 from dateutil import parser, tz
 
 
@@ -28,14 +29,15 @@ HP_TO_KW = 0.7457                # kW per horsepower
 
 
 # Timestamps are used exactly as they are written in the data, so a day is the date shown in the file
-# Set CONVERT_TO_LOCAL_TIME = True to convert timestamps that carry a UTC offset into LOCAL_TZ first,
-# which makes days and hours local midnight-to-midnight.
+# (e.g. a UTC-stamped file runs 00:00 to 23:45 +00:00 per day). Set CONVERT_TO_LOCAL_TIME = True to convert
+# timestamps that carry a UTC offset into LOCAL_TZ first, which makes days and hours local midnight-to-midnight.
 CONVERT_TO_LOCAL_TIME = False
 LOCAL_TZ = tz.gettz("America/Los_Angeles")
 
 
-# Buildings not listed here have their fans detected from the data, so an entry is only
-# needed when detection can't tell which AHU a fan belongs to, and you know better.
+# Optional fan override: building prefix -> AHU -> fans (the '<fan>' in '<prefix> <fan> elec power').
+# Buildings not listed here have their fans detected from the data (see _detect_fans), so an entry is only
+# needed when detection can't tell which AHU a fan belongs to and you know better.
 FAN_MAP: Dict[str, Dict[str, List[str]]] = {
     "Bren Hall": {
         "AH-01": ["SF-1", "SF-2", "RF-1", "RF-2"],
@@ -61,10 +63,12 @@ COLUMN_CANDIDATES: Dict[str, List[str]] = {
     "chw_return": ["{p} CHW chw return temp", "{p} chw btu meter chw return temp"],
     "chw_supply": ["{p} CHW chw supply temp", "{p} chw btu meter chw supply temp"],
 }
-# A candidate is rejected if it holds values that don't carry this unit
+# A candidate is rejected if it holds values that don't carry this unit (e.g. a 0-1 'supply air flow' fraction)
+IMPLAUSIBLE_VALUE = 1e7   # no cfm, temperature, kW or ton reading is this large; usually a sensor error code
+
 COLUMN_UNITS: Dict[str, str] = {"vav_saf": "cfm"}
 
-# Fields that make the results meaningless if their columns are missing
+# Fields that make the results meaningless if their columns are missing (they would silently read as 0)
 REQUIRED_FIELDS = ("vav_saf", "vav_sat", "vav_zt", "ahu_sat", "electric_kw")
 
 
@@ -136,7 +140,9 @@ class EnergyAccumulator:
 
 def _parse_timestamp(raw: str) -> datetime:
     """
-    Parses a timestamp cell into a naive datetime holding the date and time as written in the data.
+    Parses a timestamp cell into a naive datetime holding the date and time as written in the data. Handles
+    '2024-12-29T00:00:00-08:00 Los_Angeles' (trailing timezone name dropped) and '2024-12-29 08:00:00+00:00'
+    (the time is kept at 08:00; it is only converted to local time when CONVERT_TO_LOCAL_TIME is set).
     """
     text = raw.strip()
     head, _, tail = text.rpartition(" ")
@@ -155,15 +161,23 @@ def _safe_float(val: Any) -> float:
     """
     if not val:
         return 0.0
+    text = str(val).strip()
     try:
-        cleaned = re.sub(r"[^\d\-]", "", str(val))
-        return float(cleaned) if cleaned else 0.0
+        number = float(text)          # handles plain and scientific notation such as '1.5e-05' or '2.3E+28'
     except ValueError:
-        return 0.0
+        # Units or thousands separators: keep the leading number only, e.g. '72.5 degF', '1,234 cfm', '3.2e-4 kW'
+        match = re.search(r"[-+]?\d[\d,]*\.?\d*(?:[eE][-+]?\d+)?|[-+]?\.\d+(?:[eE][-+]?\d+)?", text)
+        if not match:
+            return 0.0
+        try:
+            number = float(match.group().replace(",", ""))
+        except ValueError:
+            return 0.0
+    return number if math.isfinite(number) else 0.0
 
 
 def _power_kw(val: Any) -> float:
-    """Parses a power reading and returns kW, converting from hp when the raw string carries a 'hp' unit."""
+    """Parses a power reading and returns kW, converting from hp when the raw string carries an 'hp' unit."""
     kw = _safe_float(val)
     return kw * HP_TO_KW if "hp" in str(val).lower() else kw
 
@@ -228,9 +242,9 @@ def _resolve_columns(prefix: str, vav_names: List[str], ahu_names: List[str], he
 
 def _detect_fans(prefix: str, header_map: dict, ahu_names: List[str]) -> Tuple[Dict[str, List[str]], List[str]]:
     """
-    Finds supply/return fan power columns by name. A fan is assigned to an AHU when its name starts
-    with the AHU's name. Fans that can't be tied to an AHU are returned  as a pooled list and
-    their power is shared between the AHUs by airflow.
+    Finds supply/return fan power columns ('<prefix> <fan> elec power') by name. A fan is assigned to an AHU when
+    its name starts with the AHU's name ('A01.SF1A.VFD' -> 'A01'); fans that can't be tied to an AHU are returned
+    as a pooled list and their power is shared between the AHUs by airflow.
     """
     pattern = re.compile(rf"^{re.escape(_normalize(prefix))} (\S+) elec power$")
     per_ahu: Dict[str, List[str]] = {a: [] for a in ahu_names}
@@ -322,10 +336,19 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
 
         _warn_missing_columns(prefix, vav_names, ahu_names, columns, header_map, building_fans, pooled_fans)
 
+        warned_columns = set()
+
         def get_val(row_dict: dict, expected_col: str) -> Any:
             """Fetches a value ignoring case and extra spacing."""
             actual_col = header_map.get(_normalize(expected_col))
-            return row_dict.get(actual_col, 0) if actual_col else 0
+            raw = row_dict.get(actual_col, 0) if actual_col else 0
+            if actual_col and actual_col not in warned_columns and abs(_safe_float(raw)) > IMPLAUSIBLE_VALUE:
+                warned_columns.add(actual_col)
+                print(f"Warning: implausible value {raw!r} in column {actual_col!r} "
+                      f"(at {row_dict.get(header_map.get('timestamp'))}); values this large are read as 0 (sensor error code)")
+            if actual_col and abs(_safe_float(raw)) > IMPLAUSIBLE_VALUE:
+                return 0
+            return raw
 
         for row in chain(head, reader):
             actual_ts_col = header_map.get('timestamp')

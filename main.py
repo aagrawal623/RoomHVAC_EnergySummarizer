@@ -156,7 +156,7 @@ def main(building: str, purpose: int, rooms: None | str) -> None:
         _print_room_energy_consumption(room_consumption)
     else:
         print("Generating plots...")
-        plot.generate_plots(room_consumption, building_vavs)
+        plot.generate_plots(room_consumption, building_vavs, building)
 
 
 if __name__ == '__main__':

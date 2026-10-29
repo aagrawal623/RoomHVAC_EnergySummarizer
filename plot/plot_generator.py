@@ -1,4 +1,5 @@
 import os
+import re
 import matplotlib.pyplot as plt
 import seaborn as sns
 from collections import defaultdict
@@ -10,7 +11,7 @@ sns.set_theme(style = "whitegrid")
 DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
 
-def generate_plots(room_consumption, building_vavs):
+def generate_plots(room_consumption, building_vavs, building: str):
     # Mapping rooms to their attributes
     room_meta = {}
     for vav in building_vavs:
@@ -22,7 +23,7 @@ def generate_plots(room_consumption, building_vavs):
             }
 
     # Directories
-    dirs = ['output/room_type', 'output/room_size', 'output/combined']
+    dirs = [f'output/{building}_room_type', f'output/{building}_room_size', f'output/{building}_combined']
     for d in dirs:
         os.makedirs(d, exist_ok = True)
 
@@ -52,12 +53,15 @@ def generate_plots(room_consumption, building_vavs):
 
     # Add a final tick at the end of the x-axis for the end of Sunday
     day_tick_positions.append(len(sorted_time_keys))
-    day_tick_labels.append("End")
+    day_tick_labels.append("Sunday End")
 
     def plot_group_by_rooms(groups_dict, out_dir, category_label):
         for group_name, rooms in groups_dict.items():
             if not rooms:
                 continue
+
+            # Update name for room types that can contain characters that are not allowed in file names
+            safe_name = re.sub(r'[\\/:*?"<>|]+', '-', str(group_name)).strip()
 
             num_rooms = len(rooms)
             sorted_rooms = sorted(rooms)
@@ -98,7 +102,7 @@ def generate_plots(room_consumption, building_vavs):
                 ax.tick_params(axis = 'x', which = 'minor', length = 4, color = 'gray')
                 ax.tick_params(axis = 'x', which = 'major', length = 8, color = 'black')
 
-                ax.set_title(f"{group_name} - Average Daily {energy_type} Energy by Day of Week",
+                ax.set_title(f"{building} {group_name} - Average Daily {energy_type} Energy by Day of Week",
                              fontsize = 15, pad = 12)
                 ax.set_xlabel("Day of Week", fontsize = 12)
                 ax.set_ylabel(f"Average {energy_type} Energy (kBTU)", fontsize = 12)
@@ -115,17 +119,17 @@ def generate_plots(room_consumption, building_vavs):
 
                 # Use bbox_inches='tight' on savefig instead of tight_layout() to avoid UserWarning
                 plt.savefig(
-                    f"{out_dir}/{group_name}_{energy_type}.png",
+                    f"{out_dir}/{safe_name}_{energy_type}.png",
                     dpi = 300,
                     bbox_inches = 'tight'
                 )
                 plt.close(fig)
 
     print("Generating room_type plots...")
-    plot_group_by_rooms(type_groups, 'output/room_type', 'Room Type')
+    plot_group_by_rooms(type_groups, f'output/{building}_room_type', 'Room Type')
 
     print("Generating room_size plots...")
-    plot_group_by_rooms(size_groups, 'output/room_size', 'Room Size')
+    plot_group_by_rooms(size_groups, f'output/{building}_room_size', 'Room Size')
 
     print("Generating combined plots...")
-    plot_group_by_rooms(combined_groups, 'output/combined', 'Combined')
+    plot_group_by_rooms(combined_groups, f'output/{building}_combined', 'Combined')
