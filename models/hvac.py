@@ -22,6 +22,8 @@ WATER_HEAT_CONSTANT = 500        # BTU / (hr * gpm * °F)
 MIN_DELTA_T = 0.5                # °F, noise floor for temperature differentials
 KWH_TO_KBTU = 3.412              # kBTU per kWh
 TONS_TO_KBTU_HR = 12.0           # kBTU/hr per Ton of refrigeration
+HP_TO_KW = 0.7457                # kW per horsepower
+
 
 
 # Equipment Mapping: Maps Building -> AHU -> List of Associated Fans
@@ -40,10 +42,10 @@ class HVACRecord:
 
     Attributes:
         timestamp (datetime): The naive datetime of the current record.
-        interval_hours (float): The duration of this reading in hours (e.g., 0.25 for 15 mins).
-        vav_data (Dict[str, Dict[str, float]]): Data keyed by VAV name (e.g., airflow, temps).
-        ahu_data (Dict[str, Dict[str, float]]): Data keyed by AHU reference (e.g., fan power).
-        building_data (Dict[str, float]): Building-level metered data (e.g., electric, chilled water).
+        interval_hours (float): The duration of this reading in hours.
+        vav_data (Dict[str, Dict[str, float]]): Data keyed by VAV name.
+        ahu_data (Dict[str, Dict[str, float]]): Data keyed by AHU reference.
+        building_data (Dict[str, float]): Building-level metered data.
     """
     timestamp: datetime
     interval_hours: float
@@ -71,6 +73,8 @@ class EnergyAccumulator:
     def __init__(self) -> None:
         """Dictionary structure: consumption[day_of_week, hour][vav_name] = [ilm_energy, nilm_energy]"""
         self.consumption = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))
+        # Distinct calendar dates seen for each (day_of_week, hour); equals the number of weeks of data.
+        self._dates_seen = defaultdict(set)
 
     def add_record(self, record: HVACRecord, ilm_results: Dict[Any, float], nilm_results: Dict[Any, float]) -> None:
         """
@@ -78,10 +82,23 @@ class EnergyAccumulator:
         and nilm_results per VAV.
         """
         key = (record.day_of_week, record.hour)
+        self._dates_seen[key].add(record.timestamp.date())
         for vav, energy in ilm_results.items():
             self.consumption[key][vav.vav_name][0] += energy
         for vav, energy in nilm_results.items():
             self.consumption[key][vav.vav_name][1] += energy
+
+
+    def average(self) -> Dict[Any, Dict[str, List[float]]]:
+        """
+        Returns consumption averaged per week: each (day_of_week, hour) bucket is divided by the number
+        of distinct dates that contributed to it. Same structure as self.consumption.
+        """
+        averaged = {}
+        for key, per_vav in self.consumption.items():
+            n_weeks = max(len(self._dates_seen[key]), 1)
+            averaged[key] = {name: [ilm / n_weeks, nilm / n_weeks] for name, (ilm, nilm) in per_vav.items()}
+        return averaged
 
 
 def _safe_float(val: Any) -> float:
@@ -98,6 +115,12 @@ def _safe_float(val: Any) -> float:
         return 0.0
 
 
+def _power_kw(val: Any) -> float:
+    """Parses a power reading and returns kW, converting from hp when the raw string carries an 'hp' unit."""
+    kw = _safe_float(val)
+    return kw * HP_TO_KW if "hp" in str(val).lower() else kw
+
+
 def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any], prefix: str = "Bren Hall",
                           interval_hours: float = 0.25) -> Generator[HVACRecord, None, None]:
     """
@@ -108,7 +131,7 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
         filepath (str): The file path to the CSV data.
         active_vavs (List[VAV]): List of VAV objects to parse data for.
         prefix (str): The building prefix used in the CSV column headers.
-        interval_hours (float): The time interval of each row (default is 15 minutes / 0.25 hours).
+        interval_hours (float): The time interval of each row (default is 15 minutes).
     """
     vav_names = [v.vav_name for v in active_vavs]
     ahu_names = list({v.ahu_ref for v in active_vavs})
@@ -149,7 +172,7 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
             # Parse AHU Data
             for ahu in ahu_names:
                 fan_power_kw = sum(
-                    _safe_float(get_val(row, f"{prefix} {fan} elec power"))
+                    _power_kw(get_val(row, f"{prefix} {fan} elec power"))
                     for fan in building_fans.get(ahu, [])
                 )
                 record.ahu_data[ahu] = {

@@ -19,8 +19,8 @@ from buildings.building_data import VAV
 If chosen to not use the command line, can configure the program using these global variables
 """
 BUILDING = 'BrenHall'    # the smart building in which room energy consumption is investigated
-PURPOSE = 'plot'       # 0 = predict, 1 = plot
-ROOMS = None              # None = all rooms, INT = specific room, STR = room type
+PURPOSE = 'plot'         # 0 = predict, 1 = plot
+ROOMS = None             # None = all rooms, INT = specific room, STR = room type
 # ───────────────────────────────────────────────────────────────────────────────────────
 
 
@@ -74,7 +74,7 @@ def main(building: str, purpose: int, rooms: None | int | str) -> None:
 
     room_consumption = defaultdict(lambda: defaultdict(lambda: [0.0, 0.0]))
 
-    for time_key, vav_data in accumulator.consumption.items():
+    for time_key, vav_data in accumulator.average().items():
         for vav in building_vavs:
             if vav.vav_name not in vav_data:
                 continue
@@ -104,12 +104,8 @@ if __name__ == '__main__':
         except ValueError:
             ROOMS = sys.argv[3]
 
-    elif len(sys.argv) != 1:
-        print("Usage: main.py building purpose rooms")
-        exit(1)
-
-    if BUILDING != 'BrenHall' and BUILDING != 'SBSGateway':
-        print("BUILDING must be either BrenHall or SBSGateway")
+    else:
+        print("Usage: main.py building purpose [room]")
         exit(1)
 
     if PURPOSE != 'predict' and PURPOSE != 'plot':

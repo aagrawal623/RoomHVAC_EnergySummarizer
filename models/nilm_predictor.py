@@ -7,7 +7,7 @@ using a calculated thermal signal.
 
 from typing import Dict, Set, Iterable
 from buildings.building_data import VAV
-from models.hvac import HVACRecord, SENSIBLE_HEAT_CONSTANT, KWH_TO_KBTU, TONS_TO_KBTU_HR, WATER_HEAT_CONSTANT
+from models.hvac import HVACRecord, KWH_TO_KBTU, TONS_TO_KBTU_HR, WATER_HEAT_CONSTANT
 
 
 def predict_nilm_consumption(vavs: Iterable[VAV], record: HVACRecord) -> Dict[VAV, float]:
@@ -26,7 +26,6 @@ def predict_nilm_consumption(vavs: Iterable[VAV], record: HVACRecord) -> Dict[VA
     total_sig_elec = 0.0
 
     h = record.interval_hours
-    total_reheat_estimate = 0.0
     total_hhw_metered = 0.0
     has_hhw_meter = False
 
@@ -54,13 +53,11 @@ def predict_nilm_consumption(vavs: Iterable[VAV], record: HVACRecord) -> Dict[VA
         signals_heat[vav] = sig_h
         total_sig_heat += sig_h
 
-        # Electric Signal (airflow proportional)
+        # Electric Signal
         sig_e = saf
         signals_elec[vav] = sig_e
         total_sig_elec += sig_e
 
-        # Heating aggregate for fallback
-        total_reheat_estimate += (SENSIBLE_HEAT_CONSTANT * saf * d_reheat * h / 1000)
         if hhw_power > 0:
             has_hhw_meter = True
             total_hhw_metered += (hhw_power * h)
@@ -83,10 +80,10 @@ def predict_nilm_consumption(vavs: Iterable[VAV], record: HVACRecord) -> Dict[VA
         if chw_flow > 0 and chw_ret > chw_sup:
             building_cooling_kbtu = WATER_HEAT_CONSTANT * chw_flow * (chw_ret - chw_sup) * h / 1000
 
-    # Heating Stream
-    building_heating_kbtu = total_hhw_metered if has_hhw_meter else total_reheat_estimate
+    # Heating Streams
+    building_heating_kbtu = total_hhw_metered if has_hhw_meter else 0.0
 
-    # Disaggregate Streams Independently and sum streams for the VAV's final NILM prediction
+    # Disaggregate Streams independently and sum streams for the VAV's final NILM prediction
     for vav in vavs:
         vav_cool = 0.0
         vav_heat = 0.0
