@@ -20,7 +20,7 @@ from buildings.building_data import VAV
 If chosen to not use the command line, can configure the program using these global variables
 """
 BUILDING = 'BrenHall'    # the smart building in which room energy consumption is investigated
-PURPOSE = 'summarize'    # predict = 0, plot = 1, summarize = 2
+PURPOSE = 'predict'    # predict = 0, plot = 1, summarize = 2
 ROOMS = None             # None = all rooms, STR = specific room or room type
 # ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -38,14 +38,23 @@ def _get_rooms_to_predict(vavs: Set[VAV], rooms: str | None) -> Set[str]:
     return {rm for rm, room in all_rooms.items() if room.room_type == rooms}
 
 
-def _print_room_energy_consumption(room_consumption):
+def _write_room_energy_consumption(room_consumption, building: str) -> None:
+    """
+    Writes the average ILM and NILM energy (kBTU per hour) of each room for every (day of week, hour) of the
+    average week to output/{building}_average_hourly_consumption.txt, the same values that are plotted.
+    """
     DAYS_OF_WEEK = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 
-    for time_key, rooms_data in sorted(room_consumption.items()):
-        day, hr = time_key
-        print(f"--- {DAYS_OF_WEEK[day]} {hr:02d}:00 ---")
+    lines = []
+    for (day, hr), rooms_data in sorted(room_consumption.items()):
+        lines.append(f"--- {DAYS_OF_WEEK[day]} {hr:02d}:00 ---")
         for rm, energy in sorted(rooms_data.items(), key = lambda kv: buildings.room_sort_key(kv[0])):
-            print(f" Room {rm}: ILM = {energy[0]:.2f} kBTU, NILM = {energy[1]:.2f} kBTU")
+            lines.append(f" Room {rm}: ILM = {energy[0]:.2f} kBTU, NILM = {energy[1]:.2f} kBTU")
+
+    out_path = Path(f'output/{building}_average_hourly_consumption.txt')
+    out_path.parent.mkdir(parents = True, exist_ok = True)
+    out_path.write_text("\n".join(lines) + "\n", encoding = "utf-8")
+    print(f"Wrote room profiles to {out_path}")
 
 
 def _vavs_to_rooms(vav_data, building_vavs: Set[VAV], target_rooms: Set[str]) -> dict:
@@ -97,6 +106,7 @@ def _write_daily_csv(daily: dict, day_info: dict, building_vavs: Set[VAV], targe
         table_rows.append(row)
 
     out_path = Path(f'output/{building}_room_daily_consumption.csv')
+    out_path.parent.mkdir(parents = True, exist_ok = True)
     pd.DataFrame(table_rows).to_csv(out_path, index = False)
     partial = sum(1 for r in table_rows if r['intervals'] != 96)
     print(f"Wrote {out_path} ({len(table_rows)} days x {len(room_cols)} rooms, ILM and NILM columns, kBTU; "
@@ -151,9 +161,8 @@ def main(building: str, purpose: int, rooms: None | str) -> None:
 
     room_consumption = {time_key: _vavs_to_rooms(vav_data, building_vavs, target_rooms)
                         for time_key, vav_data in accumulator.average().items()}
-
     if purpose == 0:
-        _print_room_energy_consumption(room_consumption)
+        _write_room_energy_consumption(room_consumption, building)
     else:
         print("Generating plots...")
         plot.generate_plots(room_consumption, building_vavs, building)
