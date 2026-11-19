@@ -58,7 +58,7 @@ COLUMN_CANDIDATES: Dict[str, List[str]] = {
     "electric_kw": ["{p} Whole Building Electric Meter total elec power",
                     "{p} Whole Building Electric Meter elec power",
                     "{p} Whole Building Electric Meter elec power (NA removed)"],
-    "chw_tons": ["{p} CHW chw clg power", "{p} chw btu meter chw clg power"],
+    "chw_tons": ["{p} CHW chw clg power", "{p} chw btu meter chw clg power", "{p} CHW chw clg load"],
     "chw_flow": ["{p} CHW chw flow", "{p} chw btu meter chw flow"],
     "chw_return": ["{p} CHW chw return temp", "{p} chw btu meter chw return temp"],
     "chw_supply": ["{p} CHW chw supply temp", "{p} chw btu meter chw supply temp"],
@@ -67,6 +67,10 @@ COLUMN_CANDIDATES: Dict[str, List[str]] = {
 IMPLAUSIBLE_VALUE = 1e7   # no cfm, temperature, kW or ton reading is this large; usually a sensor error code
 
 COLUMN_UNITS: Dict[str, str] = {"vav_saf": "cfm"}
+
+# For these fields a candidate column that holds some non-zero values wins over one that is present but all zero
+# (e.g. Bren Hall has a 'chw clg power' column that is always 0 next to a working 'chw clg load' column).
+DATA_PREFERRED_FIELDS = ("chw_tons", "electric_kw")
 
 # Fields that make the results meaningless if their columns are missing (they would silently read as 0)
 REQUIRED_FIELDS = ("vav_saf", "vav_sat", "vav_zt", "ahu_sat", "electric_kw")
@@ -80,13 +84,16 @@ class HVACRecord:
     Attributes:
         timestamp (datetime): The naive datetime of the current record.
         interval_hours (float): The duration of this reading in hours.
-        vav_data (Dict[str, Dict[str, float]]): Data keyed by VAV name.
+        vav_data (Dict[str, Dict[str, float]]): Data keyed by VAV name, for the VAVs in the mapping.
+        extra_vav_data (Dict[str, Dict[str, float]]): Same, for VAVs that are in the data but not in the mapping.
+            NILM needs them: the building's energy is shared by every VAV, mapped or not.
         ahu_data (Dict[str, Dict[str, float]]): Data keyed by AHU reference.
         building_data (Dict[str, float]): Building-level metered data.
     """
     timestamp: datetime
     interval_hours: float
     vav_data: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    extra_vav_data: Dict[str, Dict[str, float]] = field(default_factory=dict)
     ahu_data: Dict[str, Dict[str, float]] = field(default_factory=dict)
     building_data: Dict[str, float] = field(default_factory=dict)
 
@@ -219,7 +226,7 @@ def _resolve_columns(prefix: str, vav_names: List[str], ahu_names: List[str], he
     """
     resolved = {}
     for field_name, templates in COLUMN_CANDIDATES.items():
-        best, best_found = templates[0], 0
+        best, best_score = templates[0], (False, 0)
         for template in templates:
             if "{v}" in template:
                 names = [template.format(p = prefix, v = v) for v in vav_names]
@@ -228,16 +235,37 @@ def _resolve_columns(prefix: str, vav_names: List[str], ahu_names: List[str], he
             else:
                 names = [template.format(p = prefix)]
             found = [header_map[_normalize(n)] for n in names if _normalize(n) in header_map]
+            has_data = field_name in DATA_PREFERRED_FIELDS and any(
+                _safe_float(row.get(c)) != 0 for c in found for row in sample_rows)
 
             unit = COLUMN_UNITS.get(field_name)
             if unit and found:
                 values = [str(row.get(c, "")).lower() for c in found[:20] for row in sample_rows if row.get(c)]
                 if values and not any(unit in v for v in values):
                     continue
-            if len(found) > best_found:
-                best, best_found = template, len(found)
+            score = (has_data, len(found))
+            if len(found) > 0 and score > best_score:
+                best, best_score = template, score
         resolved[field_name] = best
     return resolved
+
+
+def _detect_data_vavs(prefix: str, headers: Iterable[str], columns: Dict[str, str], header_map: dict,
+                      known: Set[str]) -> List[str]:
+    """
+    Finds every VAV in the data, mapped or not: any name with a zone temp column that also has the supply air
+    temp and airflow columns the predictors need. Returns the names that are not in `known` (the mapped VAVs).
+    """
+    pattern = re.compile(rf"^{re.escape(prefix)} (\S+) zone temp$", re.IGNORECASE)
+    found = []
+    for header in headers:
+        match = pattern.match(re.sub(r"\s+", " ", str(header).strip())) if header else None
+        if not match or match.group(1) in known:
+            continue
+        name = match.group(1)
+        if all(_normalize(columns[f].format(p = prefix, v = name)) in header_map for f in ("vav_saf", "vav_sat")):
+            found.append(name)
+    return found
 
 
 def _detect_fans(prefix: str, header_map: dict, ahu_names: List[str]) -> Tuple[Dict[str, List[str]], List[str]]:
@@ -334,6 +362,24 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
         def col(field_name: str, **names: str) -> str:
             return columns[field_name].format(p = prefix, **names)
 
+        extra_vavs = _detect_data_vavs(prefix, reader.fieldnames or [], columns, header_map, set(vav_names))
+        print(f"VAVs in the data: {len(vav_names) + len(extra_vavs)} ({len(vav_names)} in the mapping, "
+              f"{len(extra_vavs)} not); NILM shares the building's energy between all of them")
+        tons_col = header_map.get(_normalize(col("chw_tons")))
+        chw_tons_valid = bool(tons_col) and any(_safe_float(row.get(tons_col)) != 0 for row in head)
+        print(f"Building meters: cooling = {col('chw_tons')!r} "
+              f"({'tons' if chw_tons_valid else 'no usable data, using flow x temperature difference'}), "
+              f"electric = {col('electric_kw')!r}")
+        hhw_mapped = sum(_normalize(col("vav_hhw", v = v)) in header_map for v in vav_names)
+        hhw_extra = sum(_normalize(col("vav_hhw", v = v)) in header_map for v in extra_vavs)
+        if hhw_mapped + hhw_extra:
+            print(f"Heating = sum of the VAV columns like {col('vav_hhw', v = (vav_names + extra_vavs)[0])!r}: "
+                  f"found for {hhw_mapped} of {len(vav_names)} mapped and {hhw_extra} of {len(extra_vavs)} "
+                  f"unmapped VAVs (there is no building-level heating meter)")
+        else:
+            print(f"Heating: no VAV column like {col('vav_hhw', v = vav_names[0])!r} in the data, so there is no "
+                  f"heating energy to disaggregate")
+
         _warn_missing_columns(prefix, vav_names, ahu_names, columns, header_map, building_fans, pooled_fans)
 
         warned_columns = set()
@@ -367,6 +413,14 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
                     'hhw': _safe_float(get_val(row, col("vav_hhw", v = vav)))
                 }
 
+            for vav in extra_vavs:
+                record.extra_vav_data[vav] = {
+                    'saf': _safe_float(get_val(row, col("vav_saf", v = vav))),
+                    'sat': _safe_float(get_val(row, col("vav_sat", v = vav))),
+                    'zt': _safe_float(get_val(row, col("vav_zt", v = vav))),
+                    'hhw': _safe_float(get_val(row, col("vav_hhw", v = vav)))
+                }
+
             # Fans that can't be tied to one AHU are shared between the AHUs by their airflow
             pooled_kw = sum(_power_kw(get_val(row, FAN_POWER_COLUMN.format(p = prefix, f = fan)))
                             for fan in pooled_fans)
@@ -389,5 +443,6 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
             # Parse Building Data
             for key in ('electric_kw', 'chw_tons', 'chw_flow', 'chw_return', 'chw_supply'):
                 record.building_data[key] = _safe_float(get_val(row, col(key)))
+            record.building_data['chw_tons_valid'] = 1.0 if chw_tons_valid else 0.0
 
             yield record

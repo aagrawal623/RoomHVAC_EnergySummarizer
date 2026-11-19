@@ -19,8 +19,8 @@ from buildings.building_data import VAV
 """
 If chosen to not use the command line, can configure the program using these global variables
 """
-BUILDING = 'BrenHall'    # the smart building in which room energy consumption is investigated
-PURPOSE = 'predict'    # predict = 0, plot = 1, summarize = 2
+BUILDING = 'SBSG'    # the smart building in which room energy consumption is investigated
+PURPOSE = 'summarize'    # predict = 0, plot = 1, summarize = 2
 ROOMS = None             # None = all rooms, STR = specific room or room type
 # ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -138,10 +138,20 @@ def main(building: str, purpose: int, rooms: None | str) -> None:
         lambda: defaultdict(lambda: [0.0, 0.0]))  # daily[date][vav_name] = [ilm, nilm]
     day_info = {}                                 # day_info[date] = [intervals counted, first time, last time]
 
+    audit = models.NILMAudit()
+    n_data_vavs = 0
+    stream_vav_totals = {s: defaultdict(float) for s in models.STREAMS}    # [stream][vav_name] = NILM kBTU
+
     generator = models.hvac_record_generator(hvac_file, building_vavs)
     for record in generator:
         ilm_results = models.predict_ilm_consumption(building_vavs, record)
-        nilm_results = models.predict_nilm_consumption(building_vavs, record)
+        nilm = models.disaggregate_nilm(building_vavs, record)
+        nilm_results = nilm.per_vav
+        audit.add(nilm)
+        n_data_vavs = len(record.vav_data) + len(record.extra_vav_data)
+        for stream, shares in nilm.per_vav_streams.items():
+            for vav, energy in shares.items():
+                stream_vav_totals[stream][vav.vav_name] += energy
 
         accumulator.add_record(record, ilm_results, nilm_results)
 
@@ -154,6 +164,13 @@ def main(building: str, purpose: int, rooms: None | str) -> None:
                 daily[day][vav.vav_name][0] += energy
             for vav, energy in nilm_results.items():
                 daily[day][vav.vav_name][1] += energy
+
+    # Check NILM: the rooms' energy plus the share of VAVs outside the mapping must make up the building's energy
+    all_rooms = {room.room_num for vav in building_vavs for room in vav.rooms_associated}
+    room_totals = {stream: sum(nilm_energy for _, nilm_energy in _vavs_to_rooms(
+        {name: [0.0, energy] for name, energy in vav_totals.items()}, building_vavs, all_rooms).values())
+        for stream, vav_totals in stream_vav_totals.items()}
+    audit.report(len(building_vavs), n_data_vavs, room_totals)
 
     if purpose == 2:
         _write_daily_csv(daily, day_info, building_vavs, target_rooms, building)
