@@ -54,6 +54,7 @@ COLUMN_CANDIDATES: Dict[str, List[str]] = {
     "vav_sat": ["{p} {v} supply air temp"],
     "vav_zt": ["{p} {v} zone temp"],
     "vav_hhw": ["{p} {v} hhw htg power (calculated)"],
+    "vav_damper": ["{p} {v} supply air damper position"],    # 0-100 %, read as text like '38.8%'
     "ahu_sat": ["{p} {a} supply air temp"],
     "electric_kw": ["{p} Whole Building Electric Meter total elec power",
                     "{p} Whole Building Electric Meter elec power",
@@ -181,6 +182,14 @@ def _safe_float(val: Any) -> float:
         except ValueError:
             return 0.0
     return number if math.isfinite(number) else 0.0
+
+
+def _damper(raw: Any) -> float:
+    """Damper position in % (0-100). NaN when the point is missing or blank, so a missing reading is not read as 'closed'."""
+    if raw is None or raw == 0 or not str(raw).strip():
+        return math.nan
+    value = _safe_float(raw)
+    return value if 0 <= value <= 100 else math.nan
 
 
 def _power_kw(val: Any) -> float:
@@ -383,6 +392,7 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
         _warn_missing_columns(prefix, vav_names, ahu_names, columns, header_map, building_fans, pooled_fans)
 
         warned_columns = set()
+        zeroed_readings = Counter()    # column -> number of implausible readings read as 0
 
         def get_val(row_dict: dict, expected_col: str) -> Any:
             """Fetches a value ignoring case and extra spacing."""
@@ -393,6 +403,7 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
                 print(f"Warning: implausible value {raw!r} in column {actual_col!r} "
                       f"(at {row_dict.get(header_map.get('timestamp'))}); values this large are read as 0 (sensor error code)")
             if actual_col and abs(_safe_float(raw)) > IMPLAUSIBLE_VALUE:
+                zeroed_readings[actual_col] += 1
                 return 0
             return raw
 
@@ -410,7 +421,8 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
                     'saf': _safe_float(get_val(row, col("vav_saf", v = vav))),
                     'sat': _safe_float(get_val(row, col("vav_sat", v = vav))),
                     'zt': _safe_float(get_val(row, col("vav_zt", v = vav))),
-                    'hhw': _safe_float(get_val(row, col("vav_hhw", v = vav)))
+                    'hhw': _safe_float(get_val(row, col("vav_hhw", v = vav))),
+                    'damper': _damper(get_val(row, col("vav_damper", v = vav)))
                 }
 
             for vav in extra_vavs:
@@ -418,7 +430,8 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
                     'saf': _safe_float(get_val(row, col("vav_saf", v = vav))),
                     'sat': _safe_float(get_val(row, col("vav_sat", v = vav))),
                     'zt': _safe_float(get_val(row, col("vav_zt", v = vav))),
-                    'hhw': _safe_float(get_val(row, col("vav_hhw", v = vav)))
+                    'hhw': _safe_float(get_val(row, col("vav_hhw", v = vav))),
+                    'damper': _damper(get_val(row, col("vav_damper", v = vav)))
                 }
 
             # Fans that can't be tied to one AHU are shared between the AHUs by their airflow
@@ -446,3 +459,8 @@ def hvac_record_generator(filepath: Union[str, Path], active_vavs: Iterable[Any]
             record.building_data['chw_tons_valid'] = 1.0 if chw_tons_valid else 0.0
 
             yield record
+
+        if zeroed_readings:
+            print(f"Warning: {sum(zeroed_readings.values())} implausible readings (over {IMPLAUSIBLE_VALUE:g}) in "
+                  f"{len(zeroed_readings)} columns were read as 0; most affected: "
+                  f"{[(c, n) for c, n in zeroed_readings.most_common(3)]}")

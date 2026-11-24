@@ -20,7 +20,7 @@ from buildings.building_data import VAV
 If chosen to not use the command line, can configure the program using these global variables
 """
 BUILDING = 'SBSG'    # the smart building in which room energy consumption is investigated
-PURPOSE = 'summarize'    # predict = 0, plot = 1, summarize = 2
+PURPOSE = 'plot'    # predict = 0, plot = 1, summarize = 2
 ROOMS = None             # None = all rooms, STR = specific room or room type
 # ───────────────────────────────────────────────────────────────────────────────────────
 
@@ -55,6 +55,55 @@ def _write_room_energy_consumption(room_consumption, building: str) -> None:
     out_path.parent.mkdir(parents = True, exist_ok = True)
     out_path.write_text("\n".join(lines) + "\n", encoding = "utf-8")
     print(f"Wrote room profiles to {out_path}")
+
+
+def _write_damper_buckets(dampers, building_vavs: Set[VAV], building: str) -> dict:
+    """
+    Writes every mapped VAV's damper behavior (models/damper.py) to output/{building}_damper_buckets.csv (one row
+    per VAV) and returns the bucket of each VAV: {vav_name: bucket}. The bucket belongs to the VAV only.
+    """
+    summary = dampers.vav_summary()
+    rows = [{'VAV': vav.vav_name, 'rooms': ' '.join(r.room_num for r in vav.rooms_associated), **summary[vav.vav_name]}
+            for vav in sorted(building_vavs, key = lambda v: buildings.room_sort_key(v.vav_name))
+            if vav.vav_name in summary]
+    out_path = Path(f'output/{building}_damper_buckets.csv')
+    out_path.parent.mkdir(parents = True, exist_ok = True)
+    pd.DataFrame(rows).round(2).to_csv(out_path, index = False)
+    bucket_of = {name: info['bucket'] for name, info in summary.items()}
+    counts = pd.Series([bucket_of.get(v.vav_name, models.damper.NO_DATA) for v in building_vavs]).value_counts().to_dict()
+    mixed = sum(1 for room_buckets in _room_buckets(building_vavs, bucket_of).values() if len(room_buckets) > 1)
+    print(f"Damper buckets of {len(building_vavs)} VAVs: {counts}; {mixed} room(s) are fed by VAVs in different "
+          f"buckets (VAV details in {out_path})")
+    return bucket_of
+
+
+def _room_buckets(building_vavs: Set[VAV], bucket_of: dict) -> dict:
+    """{room: set of the damper buckets of the VAVs feeding it}"""
+    out = defaultdict(set)
+    for vav in building_vavs:
+        for room in vav.rooms_associated:
+            out[room.room_num].add(bucket_of.get(vav.vav_name, models.damper.NO_DATA))
+    return out
+
+
+def _vavs_to_room_buckets(vav_data, building_vavs: Set[VAV], target_rooms: Set[str], bucket_of: dict) -> dict:
+    """
+    Like _vavs_to_rooms, but every VAV's share goes to its room under the VAV's own damper bucket:
+    {(room_num, bucket): [ilm, nilm]}. A room fed by VAVs in different buckets appears once per bucket.
+    """
+    energy = defaultdict(lambda: [0.0, 0.0])
+    for vav in building_vavs:
+        if vav.vav_name not in vav_data:
+            continue
+        ilm_energy, nilm_energy = vav_data[vav.vav_name]
+        total_weight = sum(r.get_room_weight() for r in vav.rooms_associated)
+        bucket = bucket_of.get(vav.vav_name, models.damper.NO_DATA)
+        for room in vav.rooms_associated:
+            if room.room_num in target_rooms:
+                share = room.get_room_weight() / total_weight
+                energy[(room.room_num, bucket)][0] += ilm_energy * share
+                energy[(room.room_num, bucket)][1] += nilm_energy * share
+    return energy
 
 
 def _vavs_to_rooms(vav_data, building_vavs: Set[VAV], target_rooms: Set[str]) -> dict:
@@ -134,6 +183,7 @@ def main(building: str, purpose: int, rooms: None | str) -> None:
     target_rooms = _get_rooms_to_predict(building_vavs, rooms)
 
     accumulator = models.EnergyAccumulator()
+    dampers = models.DamperProfile()
     daily = defaultdict(
         lambda: defaultdict(lambda: [0.0, 0.0]))  # daily[date][vav_name] = [ilm, nilm]
     day_info = {}                                 # day_info[date] = [intervals counted, first time, last time]
@@ -154,6 +204,7 @@ def main(building: str, purpose: int, rooms: None | str) -> None:
                 stream_vav_totals[stream][vav.vav_name] += energy
 
         accumulator.add_record(record, ilm_results, nilm_results)
+        dampers.add_record(record)
 
         if purpose == 2:
             day = record.timestamp.date()
@@ -171,6 +222,7 @@ def main(building: str, purpose: int, rooms: None | str) -> None:
         {name: [0.0, energy] for name, energy in vav_totals.items()}, building_vavs, all_rooms).values())
         for stream, vav_totals in stream_vav_totals.items()}
     audit.report(len(building_vavs), n_data_vavs, room_totals)
+    bucket_of = _write_damper_buckets(dampers, building_vavs, building)
 
     if purpose == 2:
         _write_daily_csv(daily, day_info, building_vavs, target_rooms, building)
@@ -183,6 +235,11 @@ def main(building: str, purpose: int, rooms: None | str) -> None:
     else:
         print("Generating plots...")
         plot.generate_plots(room_consumption, building_vavs, building)
+        print("Generating damper plots...")
+        by_bucket = {time_key: _vavs_to_room_buckets(vav_data, building_vavs, target_rooms, bucket_of)
+                      for time_key, vav_data in accumulator.average().items()}
+        members = dampers.room_members(building_vavs, bucket_of)
+        plot.generate_damper_plots(by_bucket, dampers.member_average_by_time(members), building_vavs, building)
 
 
 if __name__ == '__main__':
