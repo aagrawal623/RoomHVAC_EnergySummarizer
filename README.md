@@ -25,7 +25,7 @@ If the files are not present or no data/ subdirectory exists, add them respectiv
 
 The first file should be named: {building_name}_vav_room_mapping.csv.
 
-This file should contain every VAV in the smart building with each room they map to. A VAV can be present on multiple columns if multiple rooms
+This file should contain every VAV zone in the smart building with each room it maps to. A VAV can be present on multiple columns if multiple rooms
 are with that VAV's zone. It should have the following headers in the first column (example data will be provided): 
 
 ```text
